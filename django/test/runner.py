@@ -16,6 +16,14 @@ from collections import defaultdict
 from contextlib import contextmanager
 from importlib import import_module
 from io import StringIO
+import ast
+import inspect
+from typing import List
+import warnings
+import textwrap
+from pathlib import Path
+import ipdb
+import unittest
 
 import sqlparse
 
@@ -41,6 +49,11 @@ try:
 except ImportError:
     tblib = None
 
+
+def function_injection(unit_test_method):
+    pdb.set_trace()
+    return unit_test_method
+    
 
 class DebugSQLTextTestResult(unittest.TextTestResult):
     def __init__(self, stream, descriptions, verbosity):
@@ -997,8 +1010,32 @@ class DiscoverRunner:
     def run_suite(self, suite, **kwargs):
         kwargs = self.get_test_runner_kwargs()
         runner = self.test_runner(**kwargs)
+        
+        # Create a new TestSuite to hold the modified tests
+        modified_suite = unittest.TestSuite()
+        print("Original Suite:", suite)
+        
+        def add_tests(suite_to_add):
+            for test in suite_to_add:
+                if isinstance(test, unittest.TestSuite):
+                    add_tests(test)
+                elif isinstance(test, unittest.TestCase):
+                    test_method = getattr(test, test._testMethodName)
+                    modified_method = function_injection(test_method)
+                    setattr(test, test._testMethodName, modified_method)
+                    print("Modified Test Method:", test._testMethodName)
+                    modified_suite.addTest(test)
+                else:
+                    print("Unknown test type:", type(test))
+        
+        add_tests(suite)
+        
+        print("Modified Suite:", modified_suite)
+        
+        result = runner.run(modified_suite)
+        
         try:
-            return runner.run(suite)
+            return result
         finally:
             if self._shuffler is not None:
                 seed_display = self._shuffler.seed_display
