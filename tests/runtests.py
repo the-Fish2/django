@@ -251,7 +251,7 @@ def function_injection(unit_test):
             print(f"{var_name}: {var_value}")
                                       
     """)
-
+  state_output_code = ""
   tree = state_output_code + "\n" + tree
   
 
@@ -282,30 +282,17 @@ def test5():
 
 
 class ModifiedTestRunner(DiscoverRunner):
-    # def run_suite(self, suite, **kwargs):
-    #     kwargs = self.get_test_runner_kwargs()
-    #     runner = self.test_runner(**kwargs)
-    #     try:
-    #         return runner.run(suite)
-    #     finally:
-    #         if self._shuffler is not None:
-    #             seed_display = self._shuffler.seed_display
-    #             self.log(f"Used shuffle seed: {seed_display}")
-
     def run_suite(self, suite, **kwargs):
         kwargs = self.get_test_runner_kwargs()
         runner = self.test_runner(**kwargs)
-
         modified_suite = self.test_suite()
+
         for test in suite:
             for val in test:
-                print(val._testMethodName)
                 valMethodName = val._testMethodName
                 print(valMethodName)
                 test_method = getattr(val, valMethodName)
-                print(test_method)
                 modified_test_method = function_injection(test_method)
-                print(modified_test_method)
 
                 module_name = test.__class__.__module__
                 module = sys.modules.get(module_name)
@@ -315,16 +302,9 @@ class ModifiedTestRunner(DiscoverRunner):
                 else:
                     exec_globals = module.__dict__
 
-                print(exec_globals)
-                
-                # exec_globals = test.__class__.__module__.__dict__.copy()
-                # exec_locals = test.__dict__
-                
-                # # Execute the modified method within the correct context
-                # exec(modified_test_method, exec_globals, exec_locals)
-                # exec(modified_test_method, exec_globals, test.__dict__)
                 try:
-                    exec(modified_test_method, exec_globals)
+                    exec(modified_test_method)
+                    #, exec_globals)
                     # modified_suite.addTest(modified_test_method)
                     print("Running this test succeeded")
                 except Exception as e:
@@ -343,44 +323,8 @@ class ModifiedTestRunner(DiscoverRunner):
                 except Exception as e:
                     print(e)
                     print("Adding this test failed")
-            # test_method = getattr(test, test.testMethod)
-            # print(test_method)
-        #     modified_test_method = function_injection(test_method)
-        #     exec(modified_test_method, test.__dict__)
-                # try:
-                #     print(val.__fields__)
-                # except:
-                #     print("no fields")
 
-                # try:
-                #     print(dir(val))
-                # except:
-                #     print("no dir")
-
-                # try:
-                #     print(val.testMethod)
-                # except:
-                #     print("no testMethod")
-
-                # try:
-                #     print(val[0])
-                # except:
-                #     print("no indexing")
-
-                # try:
-                #     print(dir(type(val)))
-                # except:
-                #     print(" dir type val fails")
-
-            # print(test)
-            # print(dir(test))
-            # print("BREAKPOINT AHHHH")
-            # test_method = getattr(test, test.testMethod)
-            # print(test_method)
-        #     modified_test_method = function_injection(test_method)
-        #     exec(modified_test_method, test.__dict__)
-        #     modified_suite.addTest(test)
-        return runner.run(modified_suite, **kwargs)
+        return super().run_suite(modified_suite, **kwargs)
 #, **kwargs
 
 def get_runner(settings, test_runner_class=None):
@@ -707,8 +651,6 @@ def django_tests(
         if first_test:
             # Create a new suite with only the first test
             new_suite = test_runner.test_suite()
-            print(new_suite)
-            print(first_test)
             new_suite.addTest(first_test)
             return original_run_suite(new_suite)
         return original_run_suite(suite)
@@ -716,14 +658,10 @@ def django_tests(
     test_runner.run_suite = run_only_first_test
     
     foo = function_injection(test5)
-    print("Please...")
-    print(foo)
-    exec(foo)
-    print("hi")
     test5()
 
     failures = test_runner.run_tests(test_labels)
-    teardown_run_tests(state)
+    #teardown_run_tests(state)
     return failures
 
 
