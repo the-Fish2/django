@@ -218,6 +218,12 @@ def function_injection(unit_test):
   tree = ast.unparse(tr2)
 
   state_output_code = textwrap.dedent("""
+    def testName(name, value=None):
+        exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+        if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections):
+            return True
+        return False
+
     def custom_repr(obj, depth=0, max_depth=10):
         if depth > max_depth:
             return ""
@@ -276,7 +282,20 @@ def test5():
 
 
 class ModifiedTestRunner(DiscoverRunner):
+    # def run_suite(self, suite, **kwargs):
+    #     kwargs = self.get_test_runner_kwargs()
+    #     runner = self.test_runner(**kwargs)
+    #     try:
+    #         return runner.run(suite)
+    #     finally:
+    #         if self._shuffler is not None:
+    #             seed_display = self._shuffler.seed_display
+    #             self.log(f"Used shuffle seed: {seed_display}")
+
     def run_suite(self, suite, **kwargs):
+        kwargs = self.get_test_runner_kwargs()
+        runner = self.test_runner(**kwargs)
+
         modified_suite = self.test_suite()
         for test in suite:
             for val in test:
@@ -307,9 +326,10 @@ class ModifiedTestRunner(DiscoverRunner):
                 try:
                     exec(modified_test_method, exec_globals)
                     # modified_suite.addTest(modified_test_method)
-                    print("This test succeeded")
-                except:
-                    print("This test failed")
+                    print("Running this test succeeded")
+                except Exception as e:
+                    print(e)
+                    print("Running this test failed")
 
                 # try:
                 #     modified_suite.addTest(modified_test_method)
@@ -319,9 +339,10 @@ class ModifiedTestRunner(DiscoverRunner):
 
                 try:
                     modified_suite.addTest(test_method)
-                    print("This one worked x1")
-                except:
-                    print("This one failed")
+                    print("Adding this test succeeded")
+                except Exception as e:
+                    print(e)
+                    print("Adding this test failed")
             # test_method = getattr(test, test.testMethod)
             # print(test_method)
         #     modified_test_method = function_injection(test_method)
@@ -359,7 +380,8 @@ class ModifiedTestRunner(DiscoverRunner):
         #     modified_test_method = function_injection(test_method)
         #     exec(modified_test_method, test.__dict__)
         #     modified_suite.addTest(test)
-        return super().run_suite(modified_suite, **kwargs)
+        return runner.run(modified_suite, **kwargs)
+#, **kwargs
 
 def get_runner(settings, test_runner_class=None):
     if test_runner_class is None:
