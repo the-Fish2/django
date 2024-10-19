@@ -23,6 +23,7 @@ import warnings
 import textwrap
 from pathlib import Path
 import ipdb
+import types
 import unittest
 
 import sqlparse
@@ -49,10 +50,118 @@ try:
 except ImportError:
     tblib = None
 
+def recursive_injection(callstack):
+  body2 = []
+
+  for b in callstack.body:
+    #print(b, end="Next, \n")
+    bodyExists = True
+    try:
+      b.body
+    except:
+      bodyExists = False
+
+    if bodyExists:
+      recursive_injection(b)
+    
+    
+    inject_func = ast.parse(f"state_output(locals(), \"{b}\")")
+    body2.append(inject_func)
+    body2.append(b)
+
+    #print(body2)
+  
+  body2.append(inject_func)
+  callstack.body = body2
+
+
+  callStack = True
+  try:
+    callstack.orelse
+  except:
+    callStack = False
+
+  if callStack:
+    orelse2 = []
+
+    for b in callstack.orelse:
+      #print(b, end="Next, \n")
+
+      bodyExists = True
+      try:
+        b.body
+      except:
+        bodyExists = False
+
+      if bodyExists:
+        #print("Sub-body!")
+        recursive_injection(b)
+
+
+      inject_func = ast.parse(f"state_output(locals(), \"{ast.unparse(b)}\")")
+      orelse2.append(inject_func)
+      orelse2.append(b)
+
+      #print(body2)
+
+    orelse2.append(inject_func)
+    callstack.orelse = orelse2
+
+  return callstack
 
 def function_injection(unit_test_method):
-    pdb.set_trace()
-    return unit_test_method
+    string_test = inspect.getsource(unit_test_method)
+    string_test = textwrap.dedent(string_test)
+    inject_func = ast.parse("state_output(locals())")
+
+    tree = ast.parse(string_test)
+    tr2 = recursive_injection(tree)
+    tree = ast.unparse(tr2)
+    
+    state_output_code = textwrap.dedent("""                                                        
+        def state_output(local_vars, codeLine):
+                                        
+            def testName(name, value=None):
+                exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+                if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections):
+                    return True
+                return False
+            
+            def custom_repr(obj, depth=0, max_depth=10):
+                if depth > max_depth:
+                    return ""
+
+                if hasattr(obj, '__class__') and not isinstance(obj, (str, int, float, bool, list, dict, tuple)):
+                    attrs = []
+                    for k in dir(obj.__class__):
+                        if testName(k, getattr(obj, k)):
+                            v = getattr(obj, k)
+                            v_repr = custom_repr(v, depth + 1, max_depth)
+                            attrs.append(f"{k}: {v_repr}")
+                    return f"{obj.__class__.__name__}" + '{' + ', '.join(attrs) + '}'
+
+                return repr(obj)
+
+            exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+            all_vars = local_vars
+            user_defined_vars = {
+                name: custom_repr(value) for name, value in all_vars.items()
+                if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections)
+            }
+            print(codeLine)
+            print("NEW OUTPUT!!!")
+            for var_name, var_value in user_defined_vars.items():
+                print(f"{var_name}: {var_value}")
+                                        
+        """)
+    tree = state_output_code + "\n" + tree
+    return tree
+
+    # dependencies_tree = ast.parse(state_output_code)
+    # full_tree = ast.Module(body=dependencies_tree.body + tr2.body, type_ignores=[])
+    # return full_tree
+
+    #return unit_test_method
     
 
 class DebugSQLTextTestResult(unittest.TextTestResult):
@@ -1010,24 +1119,68 @@ class DiscoverRunner:
     def run_suite(self, suite, **kwargs):
         kwargs = self.get_test_runner_kwargs()
         runner = self.test_runner(**kwargs)
-        
         # Create a new TestSuite to hold the modified tests
         modified_suite = unittest.TestSuite()
         print("Original Suite:", suite)
-        
+
         def add_tests(suite_to_add):
             for test in suite_to_add:
                 if isinstance(test, unittest.TestSuite):
                     add_tests(test)
                 elif isinstance(test, unittest.TestCase):
                     test_method = getattr(test, test._testMethodName)
-                    modified_method = function_injection(test_method)
-                    setattr(test, test._testMethodName, modified_method)
-                    print("Modified Test Method:", test._testMethodName)
-                    modified_suite.addTest(test)
+                    original_func = test_method.__func__
+
+                    modified_test_method = function_injection(original_func)
+                    # print(modified_test_method)
+                    # modified_test_method = test_method
+
+                    module_name = test.__class__.__module__
+                    module = sys.modules.get(module_name)
+                    if module is None:
+                        print(f"Module {module_name} not found in sys.modules.")
+                        exec_globals = {}
+                    else:
+                        exec_globals = module.__dict__
+
+                    try:
+                        exec(modified_test_method)
+                        #, exec_globals)
+                        # modified_suite.addTest(modified_test_method)
+                        modified_suite.addTest(test)
+                        print("Running this test succeeded")
+                    except Exception as e:
+                        print(e)
+                        print("Running this test failed")
+
+                    # try:
+                    #     modified_ast = function_injection(original_func)
+                    #     print(modified_ast)
+                    # except Exception as e:
+                    #     print(f"Failed to implement function injection '{test._testMethodName}': {e}")
+
+                    # try: 
+                    #     compiled_code = compile(modified_ast, filename="<ast>", mode="exec")
+                    # except Exception as e:
+                    #     print(f"Failed to compile '{test._testMethodName}': {e}")
+
+                    # try:
+                    #     exec_namespace = {}
+                    #     exec(compiled_code, exec_namespace)
+                    # except Exception as e:
+                    #     print(f"Failed to exec '{test._testMethodName}': {e}")
+
+                    # try:
+
+                    #     modified_func = exec_namespace.get(original_func.__name__)
+                    #     modified_method = types.MethodType(modified_func, test)
+                    #     setattr(test, test._testMethodName, modified_method)
+                    #     print(f"Modified Test Method: {test._testMethodName}")
+                    # except Exception as e:
+                    #     print(f"Failed in last stage {e}")
                 else:
                     print("Unknown test type:", type(test))
-        
+
         add_tests(suite)
         
         print("Modified Suite:", modified_suite)
