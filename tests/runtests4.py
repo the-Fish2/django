@@ -10,7 +10,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import ast
+import inspect
+from typing import List
 import warnings
+import textwrap
 from pathlib import Path
 
 try:
@@ -27,7 +31,8 @@ else:
     from django.test import TestCase, TransactionTestCase
     from django.test.runner import get_max_test_processes, parallel_type
     from django.test.selenium import SeleniumTestCase, SeleniumTestCaseBase
-    from django.test.utils import NullTimeKeeper, TimeKeeper, get_runner
+    from django.test.utils import NullTimeKeeper, TimeKeeper, requires_tz_support #, get_runner
+    from django.test.runner import DiscoverRunner
     from django.utils.deprecation import (
         RemovedInDjango60Warning,
         RemovedInDjango61Warning,
@@ -111,6 +116,222 @@ CONTRIB_TESTS_TO_APPS = {
     "redirects_tests": ["django.contrib.redirects"],
 }
 
+
+inject_func = ast.parse("state_output(locals())")
+
+def testName(name, value=None):
+  exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+  if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections):
+    return True
+  return False
+
+def custom_repr(obj, depth=0, max_depth=10):
+    if depth > max_depth:
+        return ""
+
+    if hasattr(obj, '__class__') and not isinstance(obj, (str, int, float, bool, list, dict, tuple)):
+        attrs = []
+        for k in dir(obj.__class__):
+            if testName(k, getattr(obj, k)):
+                v = getattr(obj, k)
+                v_repr = custom_repr(v, depth + 1, max_depth)
+                attrs.append(f"{k}: {v_repr}")
+        return f'{obj.__class__.__name__}' + '{' + ', '.join(attrs) + '}'
+
+    return repr(obj)
+
+def state_output(local_vars, codeLine):
+  all_vars = local_vars
+  user_defined_vars = {
+    name: custom_repr(value) for name, value in all_vars.items()
+    if testName(name, value)
+  }
+  print(codeLine)
+  for var_name, var_value in user_defined_vars.items():
+    print(f"{var_name}: {var_value}")
+
+def recursive_injection(callstack):
+  body2 = []
+
+  for b in callstack.body:
+    #print(b, end="Next, \n")
+    bodyExists = True
+    try:
+      b.body
+    except:
+      bodyExists = False
+
+    if bodyExists:
+      recursive_injection(b)
+    
+    
+    inject_func = ast.parse(f"state_output(locals(), \"{b}\")")
+    body2.append(inject_func)
+    body2.append(b)
+
+    #print(body2)
+  
+  body2.append(inject_func)
+  callstack.body = body2
+
+
+  callStack = True
+  try:
+    callstack.orelse
+  except:
+    callStack = False
+
+  if callStack:
+    orelse2 = []
+
+    for b in callstack.orelse:
+      #print(b, end="Next, \n")
+
+      bodyExists = True
+      try:
+        b.body
+      except:
+        bodyExists = False
+
+      if bodyExists:
+        #print("Sub-body!")
+        recursive_injection(b)
+
+
+      inject_func = ast.parse(f"state_output(locals(), \"{ast.unparse(b)}\")")
+      orelse2.append(inject_func)
+      orelse2.append(b)
+
+      #print(body2)
+
+    orelse2.append(inject_func)
+    callstack.orelse = orelse2
+
+  return callstack
+
+def function_injection(unit_test):
+  string_test = inspect.getsource(unit_test)
+  string_test = textwrap.dedent(string_test)
+  inject_func = ast.parse("state_output(locals())")
+  tree = ast.parse(string_test)
+  tr2 = recursive_injection(tree)
+  tree = ast.unparse(tr2)
+
+  state_output_code = textwrap.dedent("""
+    def testName(name, value=None):
+        exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+        if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections):
+            return True
+        return False
+
+    def custom_repr(obj, depth=0, max_depth=10):
+        if depth > max_depth:
+            return ""
+
+        if hasattr(obj, '__class__') and not isinstance(obj, (str, int, float, bool, list, dict, tuple)):
+            attrs = []
+            for k in dir(obj.__class__):
+                if testName(k, getattr(obj, k)):
+                    v = getattr(obj, k)
+                    v_repr = custom_repr(v, depth + 1, max_depth)
+                    attrs.append(f"{k}: {v_repr}")
+            return f'{obj.__class__.__name__}' + '{' + ', '.join(attrs) + '}'
+
+        return repr(obj)
+                                                     
+    def state_output(local_vars, codeLine):
+        exclude_sections = ['In', 'Out', 'requests', 'json', 'os', 'subprocess', 'tempfile', 'shutil', 're', 'ast']
+        all_vars = local_vars
+        user_defined_vars = {
+            name: custom_repr(value) for name, value in all_vars.items()
+            if (not name.startswith('_') and name not in dir(__builtins__) and not callable(value) and not isinstance(value, type) and name not in exclude_sections)
+        }
+        print(codeLine)
+        for var_name, var_value in user_defined_vars.items():
+            print(f"{var_name}: {var_value}")
+                                      
+    """)
+  state_output_code = ""
+  tree = state_output_code + "\n" + tree
+  
+
+  return tree
+
+def test5():
+
+  class arbitraryPoint:
+    x = 0
+    y = 0
+
+  class arbitraryVar:
+    x1 = 2
+    x2 = 2
+    x3 = arbitraryPoint()
+
+    def changeValue(self, x4):
+      self.x1 = x4
+      # print(dir())
+      # print(globals())
+      # print(locals)
+      # print(dir(self))
+      # print(self)
+
+  z = arbitraryVar()
+  z.x1 = 3
+  z.changeValue(17)
+
+
+class ModifiedTestRunner(DiscoverRunner):
+    def run_suite(self, suite, **kwargs):
+        kwargs = self.get_test_runner_kwargs()
+        runner = self.test_runner(**kwargs)
+        modified_suite = self.test_suite()
+
+        for test in suite:
+            for val in test:
+                valMethodName = val._testMethodName
+                print(valMethodName)
+                test_method = getattr(val, valMethodName)
+                modified_test_method = function_injection(test_method)
+                # modified_test_method = test_method
+
+                module_name = test.__class__.__module__
+                module = sys.modules.get(module_name)
+                if module is None:
+                    print(f"Module {module_name} not found in sys.modules.")
+                    exec_globals = {}
+                else:
+                    exec_globals = module.__dict__
+
+                try:
+                    exec(modified_test_method)
+                    #, exec_globals)
+                    # modified_suite.addTest(modified_test_method)
+                    print("Running this test succeeded")
+                except Exception as e:
+                    print(e)
+                    print("Running this test failed")
+
+                # try:
+                #     modified_suite.addTest(modified_test_method)
+                #     print("This one worked x1")
+                # except:
+                #     print("This one failed")
+
+                try:
+                    modified_suite.addTest(test_method)
+                    print("Adding this test succeeded")
+                except Exception as e:
+                    print(e)
+                    print("Adding this test failed")
+
+        return super().run_suite(modified_suite, **kwargs)
+#, **kwargs
+
+def get_runner(settings, test_runner_class=None):
+    if test_runner_class is None:
+        test_runner_class = ModifiedTestRunner
+    return test_runner_class
 
 
 def get_test_modules(gis_enabled):
@@ -423,7 +644,6 @@ def django_tests(
         shuffle=shuffle,
         durations=durations,
     )
-    
 
     original_run_suite = test_runner.run_suite
     def run_only_first_test(suite):
@@ -435,10 +655,14 @@ def django_tests(
             new_suite.addTest(first_test)
             return original_run_suite(new_suite)
         return original_run_suite(suite)
+    
     test_runner.run_suite = run_only_first_test
+    
+    foo = function_injection(test5)
+    test5()
 
     failures = test_runner.run_tests(test_labels)
-    teardown_run_tests(state)
+    #teardown_run_tests(state)
     return failures
 
 
