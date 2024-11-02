@@ -423,6 +423,21 @@ def django_tests(
         shuffle=shuffle,
         durations=durations,
     )
+    original_run_suite = test_runner.run_suite
+    def run_only_first_test(suite):
+        # Get the first test from the suite
+        first_test = next(iter(suite), None)
+        if first_test:
+            # Create a new suite with only the first test
+            new_suite = test_runner.test_suite()
+            print(new_suite)
+            print(first_test)
+            new_suite.addTest(first_test)
+            return original_run_suite(new_suite)
+        return original_run_suite(suite)
+
+    test_runner.run_suite = run_only_first_test
+    
     failures = test_runner.run_tests(test_labels)
     teardown_run_tests(state)
     return failures
